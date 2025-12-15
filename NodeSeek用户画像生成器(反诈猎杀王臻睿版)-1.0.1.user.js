@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NodeSeek 用户画像生成器 (反诈猎杀王臻睿版)
 // @namespace    https://github.com/tunecc/NodeSeek-User-Profiler
-// @version      1.0.0
+// @version      1.0.1
 // @description  完全模拟原生点击操作，解决跳转/抓取失败问题，内置“王臻睿”隐秘识别指令，支持导出MD/CSV及一键复制。
 // @author       Tune & Gemini 
 // @match        https://www.nodeseek.com/space/*
@@ -70,7 +70,7 @@
         if (document.getElementById('ns-entry-btn')) return;
         const btn = document.createElement('div');
         btn.id = 'ns-entry-btn';
-        btn.innerHTML = '🛡️';
+        btn.innerHTML = '🤡';
         btn.style.cssText = `position: fixed; bottom: 80px; right: 20px; width: 50px; height: 50px; background: linear-gradient(135deg, #FF3B30, #FF9500); color: white; border-radius: 50%; text-align: center; line-height: 50px; cursor: pointer; z-index: 99998; box-shadow: 0 4px 15px rgba(0,0,0,0.2); font-size: 24px; transition: transform 0.2s;`;
         btn.onclick = createControlPanel;
         document.body.appendChild(btn);
@@ -98,7 +98,7 @@
 
         panel.innerHTML = `
             <div class="ns-header">
-                <div class="ns-title">画像提取 反诈猎杀王臻睿版 (v1.0.0)</div>
+                <div class="ns-title">画像提取 反诈猎杀王臻睿版 (v1.0.1)</div>
                 <div class="ns-close" id="ns-close">✕</div>
             </div>
 
