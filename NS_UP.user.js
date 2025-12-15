@@ -3,7 +3,7 @@
 // @name:zh-CN   NodeSeek 用户画像生成器
 // @name:en      NodeSeek User Profiler
 // @namespace    https://github.com/tunecc/NodeSeek-User-Profiler
-// @version      3.2
+// @version      3.3
 // @description  自动爬取NodeSeek用户的评论导出Markdown/CSV、生成符合 NodeSeek 生态的 AI 分析指令。
 // @author       Tune
 // @author       Tune
@@ -26,23 +26,26 @@
     const CONFIG = {
         CONCURRENCY: 3,       // 并发线程数
         API_DELAY: 150,       // 🚀 API模式请求间隔 (ms)
-        DEEP_DELAY: 500,      // 🛡️ 深挖模式请求间隔 (ms)
+        DEEP_DELAY: 2000,      // 🛡️ 深挖模式请求间隔 (ms)
         PER_PAGE_FLOOR: 10    // 硬编码：每页10楼
     };
 
     // 状态管理
     let state = {
         isRunning: false,
+        phase: 1,             // 🟢 新增阶段标记: 1=API, 2=深挖
         processedPages: 0,
         maxPage: 10,
         totalItems: 0,
-        deepMode: false,      // 是否开启深挖
-        deepProgress: 0
+        deepMode: false,
+        deepProgress: 0,
+        currentPostId: 0,
+        currentPage: 0
     };
     let allReplies = [];
-    let replyMap = new Map(); // 用于地毯式扫描的索引
+    let replyMap = new Map();
 
-    // --- 1. 样式注入 (保持原版 File 12 风格) ---
+    // --- 1. 样式注入 ---
     function injectStyles() {
         const style = document.createElement('style');
         style.innerHTML = `
@@ -64,12 +67,12 @@
                 padding: 24px; z-index: 99999; animation: ns-pop 0.4s cubic-bezier(0.19, 1, 0.22, 1);
             }
             @keyframes ns-pop { from { opacity:0; transform:scale(0.9) translateY(10px); } to { opacity:1; transform:scale(1) translateY(0); } }
+            
             .ns-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
             .ns-title { font-size: 18px; font-weight: 700; color: #1d1d1f; letter-spacing: -0.5px; }
             .ns-close { cursor: pointer; opacity: 0.4; transition: 0.2s; font-size: 18px; }
             .ns-close:hover { opacity: 1; transform: rotate(90deg); }
             
-            /* 统一的输入框容器样式 */
             .ns-input-wrap { display: flex; align-items: center; justify-content: space-between; background: #fff; border-radius: 12px; padding: 10px 14px; margin-bottom: 10px; border: 1px solid rgba(0,0,0,0.06); box-shadow: 0 2px 5px rgba(0,0,0,0.02); }
             .ns-input { border: none; outline: none; font-size: 16px; font-weight: 600; width: 60px; text-align: center; color: #007AFF; }
             .ns-label-row { display: flex; align-items: center; gap: 6px; font-size: 14px; color: #333; font-weight: 500; }
@@ -77,7 +80,7 @@
             .ns-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px; }
             .ns-stat { background: #fff; padding: 12px; border-radius: 14px; text-align: center; box-shadow: 0 4px 10px rgba(0,0,0,0.03); border: 1px solid rgba(0,0,0,0.04); }
             .ns-stat-label { font-size: 11px; color: #86868b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; font-weight: 600; }
-            .ns-stat-val { font-size: 18px; font-weight: 800; letter-spacing: -0.5px; }
+            .ns-stat-val { font-size: 15px; font-weight: 800; letter-spacing: -0.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
             
             .ns-progress-track { height: 6px; background: rgba(0,0,0,0.06); border-radius: 3px; overflow: hidden; margin: 20px 0 10px 0; }
             .ns-progress-fill { height: 100%; background: var(--ns-primary); width: 0%; transition: width 0.3s; }
@@ -97,7 +100,6 @@
             .ns-toast { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px 30px; border-radius: 16px; box-shadow: 0 10px 40px rgba(102, 126, 234, 0.5); z-index: 20000; font-size: 15px; font-weight: bold; text-align: center; line-height: 1.5; white-space: pre-line; animation: nsFadeIn 0.3s ease-out; max-width: 80%; }
             @keyframes nsFadeIn { from { opacity:0; transform: translate(-50%, -40%); } to { opacity:1; transform: translate(-50%, -50%); } }
 
-            /* --- 🟢 新增：iOS 风格开关与帮助图标 --- */
             .ns-switch { position: relative; display: inline-block; width: 44px; height: 26px; }
             .ns-switch input { opacity: 0; width: 0; height: 0; }
             .ns-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #e5e5ea; transition: .4s; border-radius: 34px; }
@@ -111,7 +113,7 @@
         document.head.appendChild(style);
     }
 
-    // --- 2. 入口按钮 (保持不变) ---
+    // --- 2. 入口按钮 ---
     window.addEventListener('load', () => {
         setTimeout(() => {
             injectStyles();
@@ -147,7 +149,7 @@
         document.body.appendChild(btn);
     }
 
-    // --- 3. 控制面板 (UI微调：增加深挖开关) ---
+    // --- 3. 控制面板 ---
     function createControlPanel() {
         if (document.getElementById('ns-panel')) return;
 
@@ -183,7 +185,7 @@
             <div class="ns-grid">
                 <div class="ns-stat">
                     <div class="ns-stat-label">当前进度</div>
-                    <div class="ns-stat-val" style="color:#007AFF; font-size:14px;" id="ns-page-txt">待机</div>
+                    <div class="ns-stat-val" style="color:#007AFF;" id="ns-page-txt">待机</div>
                 </div>
                 <div class="ns-stat">
                     <div class="ns-stat-label">已采集</div>
@@ -224,12 +226,10 @@
         document.getElementById('ns-copy').onclick = copyToClipboard;
         document.getElementById('ns-clear').onclick = clearData;
         
-        // 🟢 绑定帮助提示点击事件
         document.getElementById('ns-help-tip').onclick = () => {
-            showToast(`💡 深挖模式说明\n\n✅ 自动获取被截断的长回复完整内容\n✅ 自动标记引用内容，避免AI混淆\n\n⚠️ 开启后速度会变慢，以防止账号被风控`, 5000);
+            showToast(`💡 深挖模式说明\n\n1. 自动获取被截断的长回复完整内容\n2. 深挖的速度是2s一次（有防爬机制）评论太多会很慢\n3. 如果深挖的间隔设置的低，能在F12控制台看到too many requests \n`, 6000);
         };
 
-        // 自动检测页数
         const realMax = detectTotalPages();
         if (realMax > 1) {
             document.getElementById('ns-pages').value = realMax;
@@ -237,9 +237,10 @@
         }
     }
 
-    // --- 4. 核心提取逻辑 (API + 自动深挖) ---
+    // --- 4. 核心提取逻辑 ---
 
     function detectTotalPages() {
+        // V3.2 经典识别逻辑
         const pagination = document.querySelector('div[role="navigation"][aria-label="pagination"]');
         if (!pagination) return 1;
         let max = 1;
@@ -261,21 +262,22 @@
         const isDeep = document.getElementById('ns-deep-mode').checked; 
         
         state.isRunning = true;
+        state.phase = 1; // 🟢 1: API阶段
         state.processedPages = 0;
         state.maxPage = inputPages;
         state.deepMode = isDeep;
         state.deepProgress = 0;
+        state.currentPostId = 0;
+        state.currentPage = 0;
         allReplies = [];
         replyMap.clear();
         
         toggleUI(true);
         updateStatus("🚀 正在建立 API 连接...");
 
-        // 构造任务
         const tasks = [];
         for (let i = 1; i <= inputPages; i++) tasks.push(i);
 
-        // API Worker
         const apiWorker = async () => {
             while (tasks.length > 0 && state.isRunning) {
                 const page = tasks.shift();
@@ -295,7 +297,6 @@
                             url: `https://www.nodeseek.com/post-${item.post_id}-1#${item.floor_id}`
                         }));
                         
-                        // 建立索引，方便后续“顺手牵羊”
                         newItems.forEach(item => {
                             allReplies.push(item);
                             replyMap.set(`${item.post_id}-${item.floor_id}`, item);
@@ -309,7 +310,6 @@
                     state.processedPages++;
                     updateUI();
                     
-                    // 🚀 阶段1：极速延迟
                     await sleep(CONFIG.API_DELAY);
 
                 } catch (e) {
@@ -319,12 +319,10 @@
             }
         };
 
-        // 启动 API 并发
         const threads = [];
         for (let i = 0; i < CONFIG.CONCURRENCY; i++) threads.push(apiWorker());
         await Promise.all(threads);
 
-        // 如果开启了深挖模式，进入第二阶段
         if (state.isRunning && allReplies.length > 0 && state.deepMode) {
             await startDeepScanning();
         } else {
@@ -332,18 +330,18 @@
         }
     }
 
-    // 深挖逻辑 (地毯式扫描)
     async function startDeepScanning() {
+        state.phase = 2; // 🟢 2: 深挖阶段
         const deepTasks = [...allReplies]; 
-        state.totalItems = deepTasks.length; // 总任务数
+        state.totalItems = deepTasks.length; 
         
+        updateUI(); // 🟢 立即刷新 UI 状态
         updateStatus(`🔍 正在深挖 ${state.totalItems} 条完整内容...`);
         
         const deepWorker = async () => {
             while (deepTasks.length > 0 && state.isRunning) {
                 const item = deepTasks.shift();
                 
-                // 如果已经被之前的请求顺手抓了，跳过
                 if (item.isFull) {
                     state.deepProgress++;
                     updateUI();
@@ -351,17 +349,19 @@
                 }
 
                 try {
-                    // 计算页码 (硬编码每页10楼)
                     let targetPage = Math.ceil(item.floor_id / CONFIG.PER_PAGE_FLOOR);
                     if (targetPage < 1) targetPage = 1;
                     
-                    updateStatus(`📥 扫描: 帖子${item.post_id} - P${targetPage}`);
+                    state.currentPostId = item.post_id;
+                    state.currentPage = targetPage;
+                    updateUI(); 
+                    
+                    updateStatus(`📥 正在扫描: 帖子${item.post_id} 第${targetPage}页`);
                     
                     const res = await fetch(`/post-${item.post_id}-${targetPage}`);
                     const text = await res.text();
                     const doc = new DOMParser().parseFromString(text, 'text/html');
                     
-                    // 扫描全页所有楼层
                     const floorLinks = doc.querySelectorAll('.floor-link');
                     
                     floorLinks.forEach(link => {
@@ -369,13 +369,11 @@
                         const mapKey = `${item.post_id}-${currentFloorId}`;
                         const targetItem = replyMap.get(mapKey);
                         
-                        // 只要是我们要找的，还没满的，统统抓下来
                         if (targetItem && !targetItem.isFull) {
                             const container = link.closest('.content-item') || link.closest('.post-item') || link.closest('li');
                             if (container) {
                                 const contentEl = container.querySelector('.post-content');
                                 if (contentEl) {
-                                    // 清洗引用: 变更为文本标记
                                     const cleanEl = contentEl.cloneNode(true);
                                     const quotes = cleanEl.querySelectorAll('blockquote');
                                     quotes.forEach(q => {
@@ -394,7 +392,6 @@
                     state.deepProgress++;
                     updateUI();
                     
-                    // 🛡️ 阶段2：安全延迟
                     await sleep(CONFIG.DEEP_DELAY);
                     
                 } catch (e) {
@@ -424,18 +421,33 @@
         showToast(`✅ 采集完成\n共 ${allReplies.length} 条数据`);
     }
 
-    // --- 5. 导出逻辑 (Prompt 保持原版 12.js 内容) ---
+    // --- 5. 导出逻辑 ---
 
     function generatePrompt() {
         const uid = window.location.href.match(/\/space\/(\d+)/)?.[1] || 'User';
         const date = new Date().toLocaleString();
-        
+        const modeText = state.deepMode ? "完整内容版" : "API摘要版";
+
         let md = `> ⚠️ **本内容为AI生成** \n\n`;
-        md += `# NodeSeek 用户画像分析任务\n\n`;
-        md += `## 📋 任务说明\n你是一位专业的用户行为分析师，精通 **NodeSeek (一个以VPS、服务器、网络技术、数字货币和羊毛信息为主的垂直社区)** 的文化与黑话。请根据下方提供的用户回复数据，深入分析该用户的完整人物画像。\n\n`;
-        md += `> **注意**：部分长回复可能因为 NodeSeek API 列表限制而显示为截断状态（以 ... 结尾）。请基于现有的内容片段进行分析，无需臆测缺失部分。\n\n`;
+        md += `# NodeSeek 用户画像分析任务 (${modeText})\n\n`;
+        md += `## 📋 任务说明\n你是一位专业的用户行为分析师，精通 **NodeSeek (一个以VPS、服务器、网络技术和羊毛信息为主的垂直社区)** 的文化与黑话。请根据下方提供的用户回复数据，深入分析该用户的完整人物画像。\n\n`;
+        
+        // 🟢 核心修改：根据模式动态切换“注意事项”
+        if (state.deepMode) {
+            // 深挖模式的提示
+            md += `> **注意**：\n`;
+            md += `> 1. 内容中被标记为 \`(引用上下文: ...)\` 的部分是被回复对象的原话，仅供参考语境，**不代表用户本人的观点**。\n`;
+            md += `> 2. 所有回复均已通过爬虫抓取完整内容，无截断。\n\n`;
+        } else {
+            // API模式的提示 (你需要找回的这段)
+            md += `> **注意**：\n`;
+            md += `> 部分长回复可能因为 NodeSeek API 列表限制而显示为**截断状态**（通常以 ... 结尾）。请严格基于现有的内容片段进行分析，**无需臆测缺失部分**。\n\n`;
+        }
+
         md += `## 👤 分析对象\n- **用户ID**: ${uid}\n- **来源**: NodeSeek\n- **回复总数**: ${allReplies.length}\n- **数据提取时间**: ${date}\n\n`;
         md += `## 💬 完整回复记录\n\n`;
+
+        // ... (后面的代码保持不变)
 
         const groupedMap = new Map();
         allReplies.forEach(item => {
@@ -729,21 +741,26 @@
         if (elCount) elCount.innerText = allReplies.length;
         
         if (elPage) {
-            if (state.deepMode && state.totalItems > 0 && state.processedPages >= state.maxPage) {
-                // 显示深挖进度
-                elPage.innerText = `深挖 ${state.deepProgress} / ${state.totalItems}`;
+            // 🟢 如果当前是深挖阶段 (Phase 2)
+            if (state.deepMode && state.phase === 2) {
+                // 显示为：深挖(P5) 20 / 100
+                elPage.innerText = `深挖(P${state.currentPage || '-'}) ${state.deepProgress} / ${state.totalItems}`;
+                elPage.style.color = '#AF52DE'; // 紫色
+                
                 if (elBar) {
                     const pct = Math.min(100, (state.deepProgress / state.totalItems) * 100);
                     elBar.style.width = `${pct}%`;
-                    elBar.style.background = 'linear-gradient(135deg, #AF52DE, #BF5AF2)'; // 紫色进度条
+                    elBar.style.background = 'linear-gradient(135deg, #AF52DE, #BF5AF2)'; 
                 }
             } else {
-                // 显示API进度
+                // 🟢 否则显示 API 进度
                 elPage.innerText = `API ${state.processedPages} / ${state.maxPage}`;
+                elPage.style.color = '#007AFF'; // 蓝色
+                
                 if (elBar && state.maxPage > 0) {
                     const pct = Math.min(100, (state.processedPages / state.maxPage) * 100);
                     elBar.style.width = `${pct}%`;
-                    elBar.style.background = 'var(--ns-primary)'; // 蓝色进度条
+                    elBar.style.background = 'var(--ns-primary)'; 
                 }
             }
         }
@@ -757,7 +774,6 @@
         if(startArea) startArea.style.display = running ? 'none' : 'block';
         if(stopArea) stopArea.style.display = running ? 'block' : 'none';
         if(config) {
-            // 深挖开关和输入框都禁用
             document.getElementById('ns-pages').disabled = running;
             document.getElementById('ns-deep-mode').disabled = running;
         }
@@ -773,7 +789,6 @@
         t.className = 'ns-toast';
         t.innerText = msg;
         document.body.appendChild(t);
-        // 使用传入的 duration 参数，如果未传入，则默认为 2500ms (2.5秒)
         setTimeout(() => t.remove(), duration);
     }
     
